@@ -1,0 +1,50 @@
+name: London Spark schema, replay and package
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/london-spark/**'
+      - '.github/workflows/london-spark-ci.yml'
+  push:
+    branches: [master, 'codex/london-spark-ci']
+    paths:
+      - 'experiments/london-spark/**'
+      - '.github/workflows/london-spark-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Test the fail-closed replay and schema contracts
+        run: python3 -m unittest discover -s experiments/london-spark -p test_contract.py -v
+      - name: Set up the checksummed local Spark and Kafka runtime
+        run: bash experiments/london-spark/ci_bootstrap.sh "$RUNNER_TEMP/london-spark"
+      - name: Run JDBC backfill, Kafka checkpoint replay and Delta schema checks
+        run: |
+          tools="$RUNNER_TEMP/london-spark"
+          python3 experiments/london-spark/run_local.py \
+            --java "$tools/jdk-17.0.17+10" \
+            --kafka "$tools/kafka_2.13-4.0.2" \
+            --spark "$tools/spark-3.5.8-bin-hadoop3" \
+            --jars "$tools/jars" \
+            --evidence "$RUNNER_TEMP/london-output/replay.json"
+      - name: Package the exact tested job source
+        run: |
+          python3 experiments/london-spark/package_job.py \
+            --receipt "$RUNNER_TEMP/london-output/replay.json" \
+            --output "$RUNNER_TEMP/london-output/london-spark-$GITHUB_SHA.tar.gz" \
+            --version "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: london-spark-${{ github.sha }}
+          path: ${{ runner.temp }}/london-output/
+          if-no-files-found: error
+          retention-days: 14
